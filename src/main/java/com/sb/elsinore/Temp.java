@@ -1,4 +1,5 @@
 package com.sb.elsinore;
+import com.sb.elsinore.devices.I2CDevice;
 import com.sb.util.MathUtil;
 import javax.annotation.Nonnull;
 import jGPIO.GPIO.Direction;
@@ -35,6 +36,16 @@ import org.owfs.jowfsclient.OwfsException;
  */
 public final class Temp implements Runnable, Comparable<Temp> {
 
+    /**
+     * Strings for the Nodes.
+     */
+    public static final String PROBE_SIZE = "ProbeSize";
+    public static final String PROBE_ELEMENT = "probe";
+    public static final String POSITION = "position";
+
+    /**
+     * Valid sizes for the probes
+     */
     public static int SIZE_SMALL = 0;
     public static int SIZE_MEDIUM = 1;
     public static int SIZE_LARGE = 2;
@@ -51,6 +62,8 @@ public final class Temp implements Runnable, Comparable<Temp> {
     private boolean badTemp = false;
     private boolean keepalive = true;
     private boolean hidden = false;
+    public boolean cutoffEnabled = false;
+
     /**
      * Base path for BBB System Temp.
      */
@@ -64,8 +77,10 @@ public final class Temp implements Runnable, Comparable<Temp> {
     /**
      * Match the temperature regexp.
      */
-    private final Pattern tempRegexp = Pattern.compile("^(-?)([0-9]+)(.[0-9]{1,2})?(C|F)?$");
+    private final Pattern tempRegexp = Pattern.compile("^(-?)([0-9]+)(.[0-9]{1,2})?$");
     private int size = SIZE_LARGE;
+    public I2CDevice i2cDevice = null;
+    public int i2cChannel = -1;
 
     /**
      * Save the current object to the configuration using LaunchControl.
@@ -97,14 +112,18 @@ public final class Temp implements Runnable, Comparable<Temp> {
                     fProbe = bbbSystemTemp;
                 } else {
                     BrewServer.LOG.warning(
-                        "Couldn't find a valid system temperature probe");
+                            "Couldn't find a valid system temperature probe");
                     return;
                 }
             }
+        }
+        else if (name.equalsIgnoreCase("Blank")){
+            // This is a special case for no temp probe.
+            fProbe = null;
         } else {
-
+            fProbe = "/sys/bus/w1/devices/" + aName + "/w1_slave";
             File probePath =
-                new File("/sys/bus/w1/devices/" + aName + "/w1_slave");
+                new File(fProbe);
 
             // Lets assume that OWFS has "." separated names
             if (!probePath.exists() && aName.contains(".")) {
@@ -121,15 +140,21 @@ public final class Temp implements Runnable, Comparable<Temp> {
                     devAddress += newAddress[1].subSequence(2, 4);
                     devAddress += newAddress[1].subSequence(0, 2);
 
-                    String fixedAddress = devFamily + "."
+                    String fixedAddress = devFamily + "-"
                         + devAddress.toLowerCase();
 
                     BrewServer.LOG.info("Converted address: " + fixedAddress);
 
-                    aName = fixedAddress;
+                    this.fProbe = "/sys/bus/w1/devices/" + fixedAddress + "/w1_slave";
+                    probePath = new File(fProbe);
+                    if (!probePath.exists())
+                    {
+                        // Try OWFS
+                        fProbe = null;
+                    }
                 }
             }
-            this.fProbe = "/sys/bus/w1/devices/" + aName + "/w1_slave";
+
         }
 
         this.probeName = aName;
@@ -211,17 +236,7 @@ public final class Temp implements Runnable, Comparable<Temp> {
                 number += tempMatcher.group(3);
             }
             // Create the temp
-            BigDecimal temperature = new BigDecimal(number);
-            String unit = tempMatcher.group(4);
-
-            if (unit == null || unit.equals(this.scale)) {
-                this.cutoffTemp = temperature;
-            } else if (unit.equals("F")) {
-                this.cutoffTemp = fToC(temperature);
-            } else if (unit.equals("C")) {
-                this.cutoffTemp = cToF(temperature);
-            }
-
+            this.cutoffTemp= new BigDecimal(number);
         } else {
             BrewServer.LOG.severe(cutoffTemp + " doesn't match "
                     + tempRegexp.pattern());
@@ -259,8 +274,8 @@ public final class Temp implements Runnable, Comparable<Temp> {
     /**
      * Other strings, obviously named.
      */
-    private String scale = "C", volumeAddress = null, volumeOffset = null,
-            volumeUnit = null;
+    private String scale = "C", volumeAddress = "", volumeOffset = "",
+            volumeUnit = "";
 
     /**
      * Are we measuring volume?
@@ -392,7 +407,7 @@ public final class Temp implements Runnable, Comparable<Temp> {
     public BigDecimal updateTemp() {
         BigDecimal result;
 
-        if (badTemp && this.currentError.equals("")) {
+        if (badTemp && currentError != null && currentError.equals("")) {
             BrewServer.LOG.warning("Trying to recover " + this.getName());
         }
         if (fProbe == null) {
@@ -409,7 +424,10 @@ public final class Temp implements Runnable, Comparable<Temp> {
         if (badTemp) {
             badTemp = false;
             BrewServer.LOG.warning("Recovered temperature reading for " + this.getName());
-            this.currentError = "";
+            if (this.currentError.startsWith("Could"))
+            {
+                this.currentError = "";
+            }
         }
 
         // OWFS/One wire always uses Celsius
@@ -421,7 +439,7 @@ public final class Temp implements Runnable, Comparable<Temp> {
         currentTime = System.currentTimeMillis();
         currentError = null;
 
-        if (!cutoffTemp.equals(ERROR_TEMP)
+        if (cutoffEnabled
                 && currentTemp.compareTo(cutoffTemp) >= 0) {
             BrewServer.LOG.log(Level.SEVERE,
                 currentTemp + ": ****** CUT OFF TEMPERATURE ("
@@ -436,11 +454,12 @@ public final class Temp implements Runnable, Comparable<Temp> {
      */
     public BigDecimal updateTempFromOWFS() {
         // Use the OWFS connection
+        if (probeName.equals("Blank")) { return new BigDecimal(0.0);}
         BigDecimal temp = ERROR_TEMP;
         String rawTemp = "";
         try {
-            rawTemp =  LaunchControl.readOWFSPath(probeName + "/temperature");
-            if (rawTemp == null || rawTemp.equals("")) {
+            rawTemp = LaunchControl.readOWFSPath(probeName + "/temperature");
+            if (rawTemp.equals("")) {
                 BrewServer.LOG.severe(
                     "Couldn't find the probe " + probeName + " for " + name);
                 LaunchControl.setupOWFS();
@@ -927,6 +946,7 @@ public final class Temp implements Runnable, Comparable<Temp> {
         statusMap.put("elapsed", getTime());
         statusMap.put("scale", getScale());
         statusMap.put("cutoff", getCutoff());
+        statusMap.put("cutoffEnabled", cutoffEnabled);
         statusMap.put("calibration", getCalibration());
         statusMap.put("gravity", gravity);
         statusMap.put("position", this.position);
@@ -967,17 +987,7 @@ public final class Temp implements Runnable, Comparable<Temp> {
             }
             // Create the temp
             BigDecimal temperature = new BigDecimal(number);
-            temperature = temperature.setScale(2, BigDecimal.ROUND_DOWN);
-            String unit = tempMatcher.group(4);
-
-            if (unit == null || unit.equals(this.scale)) {
-                this.calibration = temperature;
-            } else if (unit.equals("F")) {
-                this.calibration = temperature.divide(new BigDecimal(1.8), context);
-            } else if (unit.equals("C")) {
-                this.calibration = temperature.multiply(new BigDecimal(1.8));
-            }
-
+            this.calibration = temperature.setScale(2, BigDecimal.ROUND_DOWN);
         } else {
             BrewServer.LOG.severe(calibration + " doesn't match "
                     + tempRegexp.pattern());
@@ -986,7 +996,7 @@ public final class Temp implements Runnable, Comparable<Temp> {
 
     public String getCalibration() {
         DecimalFormat df = new DecimalFormat("#.##");
-        return df.format(this.calibration) + this.scale;
+        return df.format(this.calibration);
     }
 
     public boolean isSetup() {
@@ -1012,15 +1022,7 @@ public final class Temp implements Runnable, Comparable<Temp> {
     public boolean isHidden() {
         return this.hidden;
     }
-    
-    public String getVisibility() {
-        if (this.hidden) {
-            return "SHOWN";
-        } else {
-            return "HIDDEN";
-        }
-    }
- 
+
     public void setGravity(BigDecimal newGravity) {
         this.gravity = newGravity;
     }
@@ -1098,5 +1100,48 @@ public final class Temp implements Runnable, Comparable<Temp> {
             return;
         }
         size = newSize;
+    }
+
+    public String getI2CDevNumberString() {
+        if (i2cDevice == null)
+        {
+            return "";
+        }
+        return i2cDevice.getDevNumberString();
+    }
+
+    public String getI2CDevAddressString() {
+        if (i2cDevice == null)
+        {
+            return "";
+        }
+        return Integer.toString(i2cDevice.getAddress());
+    }
+
+    public String geti2cChannel() {
+        if (i2cChannel == -1)
+        {
+            return "";
+        }
+        return Integer.toString(i2cChannel);
+    }
+
+    public String getI2CDevType() {
+        if (i2cDevice == null)
+        {
+            return "";
+        }
+        return i2cDevice.getDevName();
+    }
+
+    public boolean setupVolumeI2C(String i2c_device, String i2c_address, String i2c_channel, String i2c_type, String units) {
+        return setupVolumeI2C(LaunchControl.getI2CDevice(i2c_device, i2c_address, i2c_type), i2c_channel, units);
+    }
+
+    public boolean setupVolumeI2C(I2CDevice i2c_device, String i2c_channel, String volumeUnits) {
+        this.i2cDevice = i2c_device;
+        this.i2cChannel = Integer.parseInt(i2c_channel);
+        this.setVolumeUnit(volumeUnits);
+        return (i2cDevice != null);
     }
 }

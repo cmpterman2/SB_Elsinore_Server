@@ -6,7 +6,9 @@ import static org.rendersnake.HtmlAttributesFactory.type;
 import static org.rendersnake.HtmlAttributesFactory.value;
 
 import java.io.IOException;
+import java.util.ArrayList;
 
+import com.sb.elsinore.devices.I2CDevice;
 import org.rendersnake.HtmlCanvas;
 import org.rendersnake.Renderable;
 
@@ -27,38 +29,152 @@ public class PhSensorForm implements Renderable {
         html.div(id(phSensor.getName() + "-editPhSensor").class_("col-md-12"))
             .form(id(phSensor.getName() + "-editPhSensor")
                     .name(phSensor.getName() + "-edit"))
-                .input(type("text").class_("form-control")
+                .input(type("text").class_("form-control m-t")
                         .name("name").id("name")
                         .value(phSensor.getName()));
-                html.input(type("text").class_("form-control")
+        html.select(class_("form-control m-t").name("select_input")
+                .id("select_input").onChange("selectedInput(this);").onLoad("selectedInput(this);"));
+
+        html.option(value("ain")
+                    .selected_if(phSensor.getAIN().length() > 0))
+                    .write("Onboard AIN")
+                    ._option();
+        if (LaunchControl.useOWFS) {
+            html.option(value("ds2450")
+                    .selected_if(phSensor.getDsAddress().length() > 0))
+                    .write("DS2450")
+                    ._option();
+        }
+            html.option(value("i2c")
+                    .selected_if(phSensor.getI2CDevAddressString().length() > 0))
+                    .write("I2C Input")
+                    ._option();
+        html._select();
+
+        String styleString;
+        if (phSensor.getAIN().length() > 0)
+        {
+            styleString = "display: block";
+        }
+        else
+        {
+            styleString = "display: none";
+        }
+        html.div(id("ain_div").name("ain_div").style(styleString));
+
+                html.input(type("text").class_("form-control m-t")
                         .name("adc_pin").onInput("phAINChange(this);")
                         .add("pattern", "[0-7]{1}")
                         .title("Only 0-7 are accepted pins.")
                         .id("adc_pin").value(phSensor.getAIN())
                         .add("placeholder", Messages.ANALOGUE_PIN));
+        html._div();
                 // Create a list of the DS2450 addresses
-                html.select(class_("holo-spinner").name("dsAddress")
-                        .id("dsAddress").onClick("selectPhAddress(this);"));
-                html.option(value("").selected_if(
-                        "".equals(phSensor.getDsAddress())))
-                        .write(Messages.DS2450_ADDRESS)
-                ._option();
-                for (String addr: LaunchControl.getOneWireDevices("/20")) {
-                    String address = addr.substring(1);
-                    html.option(value(address)
+        if (phSensor.getDsAddress().length() > 0)
+        {
+            styleString = "display: block";
+        }
+        else
+        {
+            styleString = "display: none";
+        }
+        if (LaunchControl.useOWFS) {
+            html.div(id("ds_div").name("ds_div").style(styleString));
+
+            html.select(class_("form-control m-t").name("dsAddress")
+                    .id("dsAddress").onClick("selectPhAddress(this);"));
+            html.option(value("").selected_if(
+                    "".equals(phSensor.getDsAddress())))
+                    .write(Messages.DS2450_ADDRESS)
+                    ._option();
+            for (String addr : LaunchControl.getOneWireDevices("/20")) {
+                String address = addr.substring(1);
+                html.option(value(address)
                         .selected_if(address.equals(phSensor.getDsAddress())))
                         .write(address)
-                    ._option();
+                        ._option();
+            }
+
+            html._select();
+            html.input(type("text").class_("form-control m-t")
+                    .name("dsOffset")
+                    .id("dsOffset").value(phSensor.getDsOffset())
+                    .add("pattern", "[ABCD]{1}")
+                    .title("Only A, B, C, or D are accepted offsets")
+                    .add("placeholder", Messages.DS2450_OFFSET));
+            html._div();
+        }
+        // I2C Stuff
+        if (phSensor.getI2CDevAddressString().length() > 0) {
+            styleString = "display: block";
+        }
+        else
+        {
+            styleString = "display: none";
+        }
+        html.div(id("i2c_div").name("i2c_div").style(styleString));
+                html.select(class_("form-control m-t")
+                        .onChange("selectedI2C(this);").onLoad("selectedI2C(this);")
+                                .name("i2c_device").id("i2c_device"));
+
+                html.option(value("").selected_if(phSensor.getI2CDevicePath().equals("")))
+                        .write(Messages.I2C_DEVICE_NUMBER)._option();
+
+                for (String device: I2CDevice.getAvailableDevices())
+                {
+                    html.option(value(device)
+                            .selected_if(phSensor.getI2CDevicePath().endsWith(device)))
+                            .write(device)
+                            ._option();
+                }
+                html._select();
+                int i2cSensorAddr = Integer.parseInt(phSensor.getI2CDevAddressString());
+                for (String device: I2CDevice.getAvailableDevices()) {
+                    String devStyle = "display: none";
+                    if (phSensor.getI2CDevicePath().endsWith(device))
+                    {
+                        devStyle = "display: block";
+                    }
+                    html.select(class_("form-control m-t ").name(device).id(device).style(devStyle));
+                    html.option(value("").selected_if(phSensor.getI2CDevicePath().equals("")))
+                            .write(Messages.I2C_DEVICE_ADDRESS)._option();
+                    ArrayList<String> devAddrs = I2CDevice.getAvailableAddresses(device);
+                    if (devAddrs.size() == 0)
+                    {
+                        html.option(value(""))
+                                .write("No Devices detected")._option();
+                    }
+                    else {
+                        for (String addr : devAddrs) {
+                            int addrInt = Integer.decode(addr);
+                            html.option(value(addr).selected_if(addrInt == i2cSensorAddr))
+                                    .write(addr)._option();
+                        }
+                    }
+                    html._select();
+                }
+
+                html.input(type("text").class_("form-control m-t")
+                                .name("i2c_channel").id("i2c_channel")
+                                .value(phSensor.geti2cChannel())
+                                .add("placeholder", Messages.I2C_DEVICE_CHANNEL)
+                );
+                html.select(class_("form-control m-t").name("i2c_model")
+                        .id("i2c_model"));
+                html.option(value("").selected_if(
+                        "".equals(phSensor.getI2CDevType())))
+                        .write(Messages.I2C_MODEL)
+                        ._option();
+                for (String model: I2CDevice.getAvailableTypes()) {
+                    html.option(value(model)
+                            .selected_if(model.equals(phSensor.getI2CDevType())))
+                            .write(model)
+                            ._option();
                 }
 
                 html._select();
-                html.input(type("text").class_("form-control")
-                        .name("dsOffset")
-                        .id("dsOffset").value(phSensor.getDsOffset())
-                        .add("pattern", "[ABCD]{1}")
-                        .title("Only A, B, C, or D are accepted offsets")
-                        .add("placeholder", Messages.DS2450_OFFSET));
-                html.select(class_("holo-spinner").name("ph_model")
+        html._div();
+                html.select(class_("form-control m-t").name("ph_model")
                         .id("ph_model"));
                 html.option(value("").selected_if(
                         "".equals(phSensor.getDsAddress())))
@@ -72,7 +188,7 @@ public class PhSensorForm implements Renderable {
                 }
 
                 html._select();
-                html.input(type("number").class_("form-control")
+                html.input(type("number").class_("form-control  m-t")
                         .add("step", "any")
                         .name("calibration")
                         .id("calibration").value("")

@@ -1,5 +1,6 @@
 package com.sb.elsinore.inputs;
 
+import com.sb.elsinore.devices.I2CDevice;
 import jGPIO.GPIO.Direction;
 import jGPIO.InPin;
 import jGPIO.InvalidGPIOException;
@@ -14,13 +15,17 @@ import org.json.simple.JSONObject;
 
 import com.sb.elsinore.BrewServer;
 import com.sb.elsinore.LaunchControl;
-import com.sb.elsinore.NanoHTTPD.Response;
 import com.sb.elsinore.annotations.PhSensorType;
-import com.sb.elsinore.annotations.UrlEndpoint;
 import com.sb.util.MathUtil;
 
 public class PhSensor {
 
+    private static final java.math.BigDecimal BIGDEC_THOUSAND = new BigDecimal(1000);
+    public static final String DS_ADDRESS = "dsAddress";
+    public static final String DS_OFFSET = "dsOffset";
+    public static final String AIN_PIN = "ainPin";
+    public static final String OFFSET = "offset";
+    public static final String MODEL = "model";
     private int ainPin = -1;
     private String dsAddress = "";
     private String dsOffset = "";
@@ -30,6 +35,8 @@ public class PhSensor {
     private BigDecimal offset = new BigDecimal(0);
     private InPin ainGPIO = null;
     private boolean stopLogging = false;
+    public I2CDevice i2cDevice = null;
+    public int i2cChannel = -1;
 
     /**
      * Create a blank pH Sensor.
@@ -118,8 +125,9 @@ public class PhSensor {
      */
     public final void calibrate(final BigDecimal targetRead) {
         BigDecimal tolerance = new BigDecimal(0.3);
+        this.offset = BigDecimal.ZERO;
         BigDecimal currentValue = this.calcPhValue();
-        if (currentValue.subtract(targetRead).plus()
+        if (currentValue.subtract(targetRead).abs()
                 .compareTo(tolerance) > 0) {
             // We're outside of the tolerance. So Set the offset.
             offset = targetRead.subtract(currentValue);
@@ -143,6 +151,7 @@ public class PhSensor {
         retVal.put("phReading", phReading);
         retVal.put("name", name);
         retVal.put("deviceType", model);
+        retVal.put("offset", getOffset());
         return retVal;
     }
 
@@ -191,7 +200,13 @@ public class PhSensor {
                 LaunchControl.setupOWFS();
             }
         }
+        else if (i2cDevice != null && i2cChannel > -1)
+        {
+            BrewServer.LOG.warning(String.format("Reading from %s channel %s", getI2CDevAddressString(), i2cChannel));
+            pinValue = new BigDecimal(i2cDevice.readValue(i2cChannel)).divide(BIGDEC_THOUSAND);
+        }
 
+        BrewServer.LOG.warning("Read: " + pinValue);
         return pinValue;
     }
 
@@ -200,6 +215,10 @@ public class PhSensor {
      * @return The name of this Sensor
      */
     public final String getName() {
+        if (this.name == null)
+        {
+            this.name = "<unknown>";
+        }
         return this.name.replaceAll(" ", "_");
     }
 
@@ -246,7 +265,6 @@ public class PhSensor {
     }
     /**
      * Calculate the current PH Value based off the current pH Sensor type.
-     * @param reading The current Analog read value.
      * @return The value of the pH Probe.
      */
     public final BigDecimal calcPhValue() {
@@ -255,11 +273,20 @@ public class PhSensor {
         for (java.lang.reflect.Method m
                 : PhSensor.class.getDeclaredMethods()) {
            PhSensorType calcMethod =
-                   (PhSensorType) m.getAnnotation(PhSensorType.class);
+                   m.getAnnotation(PhSensorType.class);
            if (calcMethod != null) {
                if (calcMethod.model().equalsIgnoreCase(this.model)) {
                    try {
                        value = (BigDecimal) m.invoke(this);
+                       value = value.setScale(2, BigDecimal.ROUND_CEILING);
+                       if (value.compareTo(BigDecimal.ZERO) > 0)
+                       {
+                           phReading = value;
+                           if (LaunchControl.recorder != null)
+                           {
+                               LaunchControl.recorder.saveReading(name, phReading);
+                           }
+                       }
                    } catch (IllegalAccessException e) {
                        e.printStackTrace();
                    } catch (InvocationTargetException o) {
@@ -281,7 +308,7 @@ public class PhSensor {
         for (java.lang.reflect.Method m
                 : PhSensor.class.getDeclaredMethods()) {
            PhSensorType calcMethod =
-                   (PhSensorType) m.getAnnotation(PhSensorType.class);
+                   m.getAnnotation(PhSensorType.class);
            if (calcMethod != null) {
                typeList.add(calcMethod.model());
            }
@@ -297,6 +324,10 @@ public class PhSensor {
     @PhSensorType(model = "SEN0161")
     public final BigDecimal calcSEN0161() {
         BigDecimal readValue = this.getAverage(3);
+        if (readValue.compareTo(BigDecimal.ZERO) <= 0)
+        {
+            return readValue;
+        }
         return MathUtil.multiply(readValue, 3.5).add(offset);
     }
 
@@ -307,17 +338,27 @@ public class PhSensor {
      */
     public final BigDecimal getAverage(final int maxRead) {
         BigDecimal readValue = new BigDecimal(0);
-        BigDecimal t = null;
-        for (int i = 0; i <= maxRead; i++) {
+        BigDecimal t;
+        int i;
+        int badRead = 0;
+        for ( i = 0; i < maxRead;) {
             t = this.updateReading();
-            if (t.compareTo(BigDecimal.ZERO) == 0) {
-                i--;
-            } else {
+            if (t.compareTo(BigDecimal.ZERO) > 0) {
                 readValue = readValue.add(t);
+
+                i++;
+            }
+            else
+            {
+                badRead++;
+            }
+            if (badRead > 5)
+            {
+                return new BigDecimal(-1);
             }
         }
 
-        return MathUtil.divide(readValue, new BigDecimal(maxRead));
+        return MathUtil.divide(readValue, new BigDecimal(i));
     }
 
     /**
@@ -333,7 +374,9 @@ public class PhSensor {
      * @param attribute The Calibration offset
      */
     public final void setOffset(final String attribute) {
-        setOffset(new BigDecimal(attribute));
+        if (attribute != null && attribute.length() > 0) {
+            setOffset(new BigDecimal(attribute));
+        }
     }
 
     /**
@@ -342,5 +385,46 @@ public class PhSensor {
      */
     public final void setOffset(final BigDecimal attribute) {
         this.offset = attribute;
+    }
+
+    public String getI2CDevNumberString() {
+        if (i2cDevice == null)
+        {
+            return "";
+        }
+        return i2cDevice.getDevNumberString();
+    }
+
+    public String getI2CDevAddressString() {
+        if (i2cDevice == null)
+        {
+            return "";
+        }
+        return Integer.toString(i2cDevice.getAddress());
+    }
+
+    public String getI2CDevicePath()
+    {
+        if (i2cDevice == null)
+        {
+            return "";
+        }
+        return i2cDevice.getDevicePath();
+    }
+
+    public String geti2cChannel() {
+        if (i2cChannel == -1)
+        {
+            return "";
+        }
+        return Integer.toString(i2cChannel);
+    }
+
+    public String getI2CDevType() {
+        if (i2cDevice == null)
+        {
+            return "";
+        }
+        return i2cDevice.getDevName();
     }
 }

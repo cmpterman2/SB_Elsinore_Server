@@ -7,21 +7,22 @@ import static org.rendersnake.HtmlAttributesFactory.value;
 
 import java.io.IOException;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.Set;
 
+import com.sb.elsinore.*;
 import org.json.simple.JSONObject;
 import org.rendersnake.HtmlCanvas;
 
-import com.sb.elsinore.BrewDay;
-import com.sb.elsinore.BrewServer;
-import com.sb.elsinore.LaunchControl;
-import com.sb.elsinore.Messages;
-import com.sb.elsinore.Switch;
+import org.w3c.dom.Element;
 
 import javax.annotation.Nonnull;
 
 @SuppressWarnings("unused")
 public class SwitchTrigger implements TriggerInterface {
 
+    private static final String SWITCHNAME = "switchname";
+    private static final String ACTIVATE = "activate";
     private int position = -1;
     private String activate = null;
     private String switchName = null;
@@ -190,12 +191,12 @@ public class SwitchTrigger implements TriggerInterface {
         HtmlCanvas html = new HtmlCanvas();
         html.div(id("EditSwitchTrigger").class_(""));
         html.form(id("editTriggersForm"));
-            html.input(id("type").name("type")
+            html.input(id("type").name("type").class_("form-control m-t")
                         .hidden("true").value("switch"));
-            html.input(id("type").name("position")
+            html.input(id("type").name("position").class_("form-control m-t")
                     .hidden("position").value("" + this.position));
             // Add the Switches as a drop down list.
-            html.select(class_("holo-spinner").name("switchname")
+            html.select(class_("form-control m-t").name(SWITCHNAME)
                     .id("switchName"));
                 html.option(value(""))
                         .write(Messages.SWITCHES)
@@ -210,7 +211,7 @@ public class SwitchTrigger implements TriggerInterface {
             html._select();
 
             // Add the on/off values
-            html.select(class_("holo-spinner").name("activate")
+            html.select(class_("form-control m-t").name("activate")
                     .id("activate"));
                 html.option(value(""))
                         .write("")
@@ -226,7 +227,7 @@ public class SwitchTrigger implements TriggerInterface {
             html._select();
 
             html.button(name("submitSwitchTrigger")
-                    .class_("btn col-md-12")
+                    .class_("btn btn-primary col-md-12")
                     .add("data-toggle", "clickover")
                     .onClick("updateTriggerStep(this);"))
                 .write(Messages.EDIT)
@@ -241,9 +242,9 @@ public class SwitchTrigger implements TriggerInterface {
      * @param params The parameters to update with.
      */
     @Override
-    public final void updateTrigger(final JSONObject params) {
-        String tName = (String) params.get("switchname");
-        String tActivate = (String) params.get("activate");
+    public final boolean updateTrigger(final JSONObject params) {
+        String tName = (String) params.get(SWITCHNAME);
+        String tActivate = (String) params.get(ACTIVATE);
 
         // Update the variables.
         if (tActivate != null) {
@@ -253,8 +254,59 @@ public class SwitchTrigger implements TriggerInterface {
             this.switchName = tName;
             if (this.active) {
                 triggerSwitch();
+                return true;
             }
         }
+        return false;
+    }
+
+    @Override
+    public boolean readTrigger(Element rootElement) {
+        if (getName().equals(rootElement.getAttribute(TYPE)))
+        {
+            return false;
+        }
+        this.position = Integer.parseInt(rootElement.getAttribute(POSITION));
+        if (LaunchControl.shouldRestore()) {
+            this.activate = LaunchControl.getTextForElement(rootElement, ACTIVATE, ACTIVATE);
+        }
+        this.switchName = LaunchControl.getTextForElement(rootElement, SWITCHNAME, "");
+        return true;
+    }
+
+    @Override
+    public void updateElement(Element rootElement) {
+        Element triggerElement;
+        if (rootElement.getNodeName().equals(TriggerControl.NAME))
+        {
+            triggerElement = LaunchControl.addNewElement(rootElement, TriggerInterface.NAME);
+        }
+        else if (rootElement.getNodeName().equals(TriggerInterface.NAME))
+        {
+            triggerElement = rootElement;
+        }
+        else
+        {
+            return;
+        }
+
+        triggerElement.setAttribute(TriggerInterface.POSITION, Integer.toString(this.position));
+        triggerElement.setAttribute(TriggerInterface.TYPE, getName());
+
+        if (triggerElement.hasChildNodes()) {
+            Set<Element> delElements = new HashSet<>();
+            // Can't delete directly from the nodelist, concurrency issues.
+            for (int i = 0; i < triggerElement.getChildNodes().getLength(); i++) {
+                delElements.add((Element) triggerElement.getChildNodes().item(i));
+            }
+            // now we can delete them.
+            for (Element e : delElements) {
+                e.getParentNode().removeChild(e);
+            }
+        }
+
+        LaunchControl.addNewElement(rootElement, SWITCHNAME).setTextContent(this.switchName);
+        LaunchControl.addNewElement(rootElement, ACTIVATE).setTextContent(this.activate);
     }
 
     /**

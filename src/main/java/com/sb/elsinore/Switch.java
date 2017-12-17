@@ -12,6 +12,8 @@ import jGPIO.OutPin;
  */
 public class Switch implements Comparable<Switch> {
 
+    public static final String GPIO = "gpio";
+    public static final String POSITION = "position";
     /**
      * Current switch name.
      */
@@ -35,7 +37,7 @@ public class Switch implements Comparable<Switch> {
      */
     public Switch(final String newName, final String pinName)
             throws InvalidGPIOException {
-        this.name = newName.replace("_", " ");
+        this.name = newName.replace("_", " ").trim();
 
         String temp = null;
 
@@ -50,13 +52,20 @@ public class Switch implements Comparable<Switch> {
             this.invertOutput = true;
         }
 
-        try {
-            this.output = new OutPin(pinName);
-            this.turnOff();
-        } catch (InvalidGPIOException e) {
-            throw e;
-        } catch (RuntimeException e) {
-            throw e;
+        this.output = new OutPin(pinName);
+        this.turnOff();
+    }
+
+    public void setName(String name){
+        this.name = name;
+    }
+
+
+    public void setGPIO(String gpio) throws InvalidGPIOException {
+        if (!this.output.getGPIOName().equalsIgnoreCase(gpio))
+        {
+            this.output.close();
+            this.output = new OutPin(gpio);
         }
     }
 
@@ -116,7 +125,8 @@ public class Switch implements Comparable<Switch> {
      * @return Return the current name with _ instead of spaces.
      */
     public final String getNodeName() {
-        return name.replace(" ", "_");
+
+        return "_" + name.replace(" ", "_");
     }
 
     /**
